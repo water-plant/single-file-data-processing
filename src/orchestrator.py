@@ -4,6 +4,8 @@ import docker
 import uuid
 from typing import Optional, Callable, List
 import subprocess
+from typing import Dict, Any
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,46 @@ class Orchestrator:
         self.api_key = api_key
         self.model = model
         self.system_prompt = system_prompt
+
+    def _build_prompt(self, state: Dict[str, Any]) -> str:
+        # Format error context only if errors exist
+        error_context = ""
+        if state.get("execution_errors"):
+            error_context = f"""
+            ### PREVIOUS EXECUTION ERRORS
+            The previous script failed. Analyze the traceback below and correct the logic:
+            {state['execution_errors'][-1]}
+            """
+
+        prompt = f"""
+            You are an autonomous data engineering agent. Your objective is to write a deterministic Python script to clean a dataset based on its profile and identified anomalies.
+
+            ### SYSTEM CONTEXT
+            - Schema & Data Profile: {json.dumps(state.get('schema_info', {}), indent=2)}
+            - Anomalies to Resolve: {json.dumps(state.get('detected_anomalies', []), indent=2)}
+            {error_context}
+
+            ### EXECUTION ENVIRONMENT & CONSTRAINTS
+            1. Sandbox: The code will execute in an isolated container. 
+            2. Dynamic Paths: DO NOT hardcode file paths. Read the input file path from `sys.argv[1]` and write the final output to `sys.argv[2]`.
+            3. Libraries: Use standard libraries, `pandas`, or `duckdb`.
+            4. Scope: Fix only the anomalies listed. Do not mutate valid columns.
+            5. Logging: Print only brief summary statistics (e.g., row counts before/after) to stdout.
+
+            ### OUTPUT FORMAT
+            Output strictly valid, executable Python code. 
+            Do not output conversational text, explanations, or markdown code blocks (e.g., ```python).
+
+            import sys
+            import pandas as pd
+
+            if __name__ == "__main__":
+                input_path = sys.argv[1]
+                output_path = sys.argv[2]
+                
+                # Write your transformation logic below
+        """
+        return prompt.strip()
 
     def load_file(self, file):
         self.input = file
@@ -88,8 +130,11 @@ class Orchestrator:
             if os.path.exists(script_path):
                 os.remove(script_path)
 
-    def _extract_initial_metadata(self):
+    def _extract_initial_metadata(self, file):
         table_names = self.data_connection.list_tables()
         if not table_names:
             return {}
         return {name: self.data_connection.table(name).schema() for name in table_names}
+
+    def preprocess(self, file):
+        return
