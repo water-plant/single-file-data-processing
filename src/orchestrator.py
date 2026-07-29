@@ -6,6 +6,9 @@ from typing import Optional, Callable, List
 import subprocess
 from typing import Dict, Any
 import json
+from openai import OpenAI
+
+import openai
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,7 @@ class Orchestrator:
         self.api_key = api_key
         self.model = model
         self.system_prompt = system_prompt
+        self.client = OpenAI(api_key=api_key)
 
     def _build_prompt(self, state: Dict[str, Any]) -> str:
         # Format error context only if errors exist
@@ -85,7 +89,7 @@ class Orchestrator:
         """
         return prompt.strip()
 
-    def execute_in_docker_sandbox(
+    def _execute_in_docker_sandbox(
         self, generated_code: str, data_file_path: str
     ) -> dict:
         """
@@ -133,5 +137,23 @@ class Orchestrator:
             return {}
         return {name: self.data_connection.table(name).schema() for name in table_names}
 
-    def preprocess(self, file):
+    def preprocess(self, file_path, max_step=100):
+        state = {}
+        for step in max_step:
+            state = self._extract_initial_metadata(file_path)
+            prompt = self._build_prompt(state)
+            generated_code = self.client.chat.completions.create(
+                model=self.model, messages=[{"role": "user", "content": prompt}]
+            )
+            print(generated_code.choices[0].message.content)
+            status_output = self._execute_in_docker_sandbox(
+                generated_code.choices[0].message.content, file_path
+            )
+            status = status_output["status"]
+            output = (
+                status_output["output"]
+                if status == "status"
+                else status_output["error_log"]
+            )
+
         return
