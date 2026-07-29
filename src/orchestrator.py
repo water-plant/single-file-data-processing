@@ -55,7 +55,8 @@ class Orchestrator:
             """
 
         prompt = f"""
-            You are an autonomous data engineering agent. Your objective is to write a deterministic Python script to clean a dataset based on its profile and identified anomalies.
+            You are an expert data developer tasked with iteratively clean a dataset.
+            Your objective is to write a deterministic Python script to clean a dataset based on its profile and identified anomalies.
 
             ### SYSTEM CONTEXT
             - Schema & Data Profile: {json.dumps(state.get('schema_info', {}), indent=2)}
@@ -83,10 +84,6 @@ class Orchestrator:
                 # Write your transformation logic below
         """
         return prompt.strip()
-
-    def load_file(self, file):
-        self.input = file
-        return
 
     def execute_in_docker_sandbox(
         self, generated_code: str, data_file_path: str
