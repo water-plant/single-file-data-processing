@@ -13,6 +13,8 @@ dependencies = [
     "jsonschema>=4.0.0",
     "pyyaml>=6.0.0",
     "docker>=7.1.0",
+    "openai>=2.48.0",
+    "pandas>=3.0.5",
 ]
 
 # Defines optional dependencies for specific execution environments or plugins
