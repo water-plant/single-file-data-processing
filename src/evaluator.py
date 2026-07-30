@@ -1,15 +1,18 @@
 from typing import Any, Dict, Tuple
 import pandas as pd
+import openai
 
 
 class Evaluator:
     def __init__(
         self,
+        api_key,
         row_retention_threshold: float = 0.95,
         distribution_threshold: float = 0.10,
     ):
         self.row_retention_threshold = row_retention_threshold
         self.distribution_threshold = distribution_threshold
+        self.client = openai.OpenAI(api_key)
 
     def evaluate(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """Runs evaluation on the agent's output."""
@@ -73,7 +76,10 @@ class Evaluator:
         self, df_raw: pd.DataFrame, df_clean: pd.DataFrame, state: Dict[str, Any]
     ) -> Tuple[bool, str]:
         prompt = self._build_semantic_prompt(df_raw.head(5), df_clean.head(5))
-        response = llm_client.generate(prompt)
+        response = self.client.chat.completions.create(
+            model="gpt-4o", messages=[{"role": "user", "content": prompt}]
+        )
+
         if "FAIL" in response:
             return False, response.split("FAIL:")[-1].strip()
 
