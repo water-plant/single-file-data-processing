@@ -9,6 +9,7 @@ import json
 from openai import OpenAI
 
 import openai
+from .evaluator import Evaluator
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +46,36 @@ class Orchestrator:
         self.logger.setLevel(log_level)
         self.api_key = api_key
         self.model = model
-        self.system_prompt = system_prompt
+        self.system_prompt = (
+            system_prompt
+            if not system_prompt
+            else """
+                You are an autonomous data engineering agent. Your objective is to write a deterministic Python script to clean a dataset.
+
+                ### EXECUTION ENVIRONMENT & CONSTRAINTS
+                1. Sandbox: The code will execute in an isolated container. 
+                2. Dynamic Paths: DO NOT hardcode file paths. Read the input file path from `sys.argv[1]` and write the final output to `sys.argv[2]`.
+                3. Libraries: Use standard libraries, `pandas`, or `duckdb`.
+                4. Scope: Fix only the requested anomalies. Do not mutate valid columns.
+                5. Logging: Print only brief summary statistics to stdout.
+
+                ### OUTPUT FORMAT
+                Output strictly valid, executable Python code. 
+                Do not output conversational text, explanations, or markdown code blocks. Start immediately with:
+
+                import sys
+                import pandas as pd
+
+                if __name__ == "__main__":
+                    input_path = sys.argv[1]
+                    output_path = sys.argv[2]
+
+                """
+        )
+
         self.client = OpenAI(api_key=api_key)
 
     def _build_prompt(self, state: Dict[str, Any]) -> str:
-        # Format error context only if errors exist
         error_context = ""
         if state.get("execution_errors"):
             error_context = f"""
@@ -58,39 +84,18 @@ class Orchestrator:
             {state['execution_errors'][-1]}
             """
 
-        prompt = f"""
-            You are an expert data developer tasked with iteratively clean a dataset.
-            Your objective is to write a deterministic Python script to clean a dataset based on its profile and identified anomalies.
-
-            ### SYSTEM CONTEXT
-            - Schema & Data Profile: {json.dumps(state.get('schema_info', {}), indent=2)}
-            - Anomalies to Resolve: {json.dumps(state.get('detected_anomalies', []), indent=2)}
-            {error_context}
-
-            ### EXECUTION ENVIRONMENT & CONSTRAINTS
-            1. Sandbox: The code will execute in an isolated container. 
-            2. Dynamic Paths: DO NOT hardcode file paths. Read the input file path from `sys.argv[1]` and write the final output to `sys.argv[2]`.
-            3. Libraries: Use standard libraries, `pandas`, or `duckdb`.
-            4. Scope: Fix only the anomalies listed. Do not mutate valid columns.
-            5. Logging: Print only brief summary statistics (e.g., row counts before/after) to stdout.
-
-            ### OUTPUT FORMAT
-            Output strictly valid, executable Python code. 
-            Do not output conversational text, explanations, or markdown code blocks (e.g., ```python).
-
-            import sys
-            import pandas as pd
-
-            if __name__ == "__main__":
-                input_path = sys.argv[1]
-                output_path = sys.argv[2]
-                
-                # Write your transformation logic below
+        user_prompt = f"""
+        ### SYSTEM CONTEXT
+        - Schema & Data Profile: {json.dumps(state.get('schema_info', {}), indent=2)}
+        - Anomalies to Resolve: {json.dumps(state.get('detected_anomalies', []), indent=2)}
+        {error_context}
+        
+        Write the Python script to resolve these anomalies.
         """
-        return prompt.strip()
+        return user_prompt.strip()
 
     def _execute_in_docker_sandbox(
-        self, generated_code: str, data_file_path: str
+        self, generated_code: str, data_file_path: str, output_file_path: str
     ) -> dict:
         """
         Executes LLM-generated code in an isolated Docker container.
@@ -101,16 +106,25 @@ class Orchestrator:
         with open(script_path, "w") as f:
             f.write(generated_code)
 
-        absolute_data_path = os.path.abspath(data_file_path)
+        input_path = os.path.abspath(data_file_path)
+        input_filename = os.path.basename(input_path)
+
+        output_dir = os.path.dirname(os.path.abspath(output_file_path))
+        output_filename = os.path.basename(output_file_path)
 
         try:
             container = client.containers.run(
                 image="python:3.11-slim",  # Use a minimal image
-                command=["python", "/app/script.py"],
+                command=[
+                    "python",
+                    "/app/script.py",
+                    f"/data/{input_filename}",
+                    f"/output/{output_filename}",
+                ],
                 volumes={
                     script_path: {"bind": "/app/script.py", "mode": "ro"},
-                    absolute_data_path: {"bind": self.input, "mode": "ro"},
-                    os.path.abspath("./output"): {"bind": "/output", "mode": "rw"},
+                    input_path: {"bind": f"/{input_filename}", "mode": "rw"},
+                    output_dir: {"bind": "/output", "mode": "rw"},
                 },
                 working_dir="/app",
                 network_disabled=True,
@@ -138,22 +152,32 @@ class Orchestrator:
         return {name: self.data_connection.table(name).schema() for name in table_names}
 
     def preprocess(self, file_path, max_step=100):
+        eval = Evaluator(self.api_key)
         state = {}
-        for step in max_step:
-            state = self._extract_initial_metadata(file_path)
+        for step in range(max_step):
+            print(f"--- Iteration {step + 1} ---")
+            state["metadata"] = self._extract_initial_metadata(file_path)
             prompt = self._build_prompt(state)
-            generated_code = self.client.chat.completions.create(
-                model=self.model, messages=[{"role": "user", "content": prompt}]
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
             )
-            print(generated_code.choices[0].message.content)
-            status_output = self._execute_in_docker_sandbox(
-                generated_code.choices[0].message.content, file_path
-            )
+            print(response.choices[0].message.content)
+            raw_code = response.choices[0].message.content
+            code = raw_code.replace("```python", "").replace("```", "").strip()
+            state["generated_code"] = code
+            status_output = self._execute_in_docker_sandbox(code, file_path)
             status = status_output["status"]
             output = (
                 status_output["output"]
                 if status == "status"
                 else status_output["error_log"]
             )
+            logging.info(output)
+            if status == "success":
+                eval.evaluate(output)
 
         return
