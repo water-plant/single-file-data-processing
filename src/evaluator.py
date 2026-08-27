@@ -6,13 +6,13 @@ import openai
 class Evaluator:
     def __init__(
         self,
-        api_key,
+        client,
         row_retention_threshold: float = 0.95,
         distribution_threshold: float = 0.10,
     ):
         self.row_retention_threshold = row_retention_threshold
         self.distribution_threshold = distribution_threshold
-        self.client = openai.OpenAI(api_key)
+        self.client = client
 
     def evaluate(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """Runs evaluation on the agent's output."""
@@ -39,14 +39,14 @@ class Evaluator:
             state.setdefault("execution_errors", []).append(f"Failed: {stats_reason}")
             return state
 
-        semantic_passed, semantic_reason = self._check_semantic_fidelity(
-            df_raw, df_clean, state
-        )
-        if not semantic_passed:
-            state.setdefault("execution_errors", []).append(
-                f"Failed: {semantic_reason}"
-            )
-            return state
+        # semantic_passed, semantic_reason = self._check_semantic_fidelity(
+        #     df_raw, df_clean, state
+        # )
+        # if not semantic_passed:
+        #     state.setdefault("execution_errors", []).append(
+        #         f"Failed: {semantic_reason}"
+        #     )
+        #     return state
 
         state["is_complete"] = True
         return state

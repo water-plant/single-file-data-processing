@@ -9,30 +9,20 @@ from typing import Dict, Any
 import json
 from openai import OpenAI
 
-import pandas as pd
 from evaluator import Evaluator
-from sentence_transformers import SentenceTransformer
-from sentence_transformers.util import cosine_similarity
-import numpy as np
-import torch
+from metadata_extraction import MetadataExtractor
 
-TYPE_DESCRIPTIONS = {
-    "quantitative": "A numeric measurement where arithmetic operations are meaningful.",
-    "categorical": "A variable containing discrete unordered categories.",
-    "ordinal": "A variable containing categories with meaningful ordering.",
-    "datetime": "A date or timestamp representing time.",
-    "date_component": "A standalone part of a date such as just days, just months, or just years.",
-    "identifier": "A value used primarily to uniquely identify an entity.",
-    "text": "Free-form natural language or descriptive text.",
-}
+import numpy as np
+
+from prompts import ORCHESTRATOR_PROMPT
 
 logger = logging.getLogger(__name__)
 
 
-class SessionNotFoundError(Exception):
-    """Raised when session ID resolution fails"""
+# class SessionNotFoundError(Exception):
+#     """Raised when session ID resolution fails"""
 
-    pass
+#     pass
 
 
 class Orchestrator:
@@ -60,32 +50,7 @@ class Orchestrator:
         self.logger.setLevel(log_level)
         self.api_key = api_key
         self.model = model
-        self.system_prompt = (
-            system_prompt
-            if system_prompt
-            else """
-                You are an autonomous data engineering agent. Your objective is to write a deterministic Python script to clean a dataset.
-
-                ### EXECUTION ENVIRONMENT & CONSTRAINTS
-                1. Sandbox: The code will execute in an isolated container. 
-                2. Dynamic Paths: DO NOT hardcode file paths. Read the input file path from `sys.argv[1]` and write the final output to `sys.argv[2]`.
-                3. Libraries: Use standard libraries, `pandas`, or `duckdb`.
-                4. Scope: Fix only the requested anomalies. Do not mutate valid columns.
-                5. Logging: Print only brief summary statistics to stdout.
-
-                ### OUTPUT FORMAT
-                Output strictly valid, executable Python code. 
-                Do not output conversational text, explanations, or markdown code blocks. Start immediately with:
-
-                import sys
-                import pandas as pd
-
-                if __name__ == "__main__":
-                    input_path = sys.argv[1]
-                    output_path = sys.argv[2]
-
-                """
-        )
+        self.system_prompt = system_prompt if system_prompt else ORCHESTRATOR_PROMPT
         self.client = OpenAI(api_key=self.api_key)
 
     def _build_prompt(self, state: Dict[str, Any]) -> str:
@@ -162,138 +127,11 @@ class Orchestrator:
                 os.remove(script_path)
 
     # @staticmethod
-    def describe_column(
-        self,
-        df,
-        column,
-        class_approx,
-        min_unique_values=20,
-        unique_ratio_threshold=0.05,
-    ):
-        col = df[column]
-        data_type = col.dtype
-        cardinality_ratio = col.nunique() / len(df) if len(df) > 0 else 0
-
-        col_info = {
-            "datatype": str(data_type),
-            "type": class_approx,
-            "missing_count": int(col.isna().sum()),
-            "unique_count": len(col.nunique()),
-            "cardinality_ratio": round(cardinality_ratio, 4),
-        }
-        description = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": prompt},
-            ],
-        )
-
-        if class_approx == "datetime":
-            col_info["date_range"] = {
-                "min": str(col.min()),
-                "max": str(col.max()),
-            }
-        elif class_approx == "quantitative":
-            q1 = col.quantile(0.25)
-            q3 = col.quantile(0.75)
-            col_info.update(
-                {
-                    "min": col.min(),
-                    "q1": q1,
-                    "median": col.median(),
-                    "mean": col.mean(),
-                    "q3": q3,
-                    "max": col.max(),
-                    "iqr": q3 - q1,
-                }
-            )
-        elif class_approx == "categorical":
-            col_info.update(
-                {
-                    "description": "Customer rating of the product on a 1–5 scale.",
-                    "categories": col.value_counts().to_dict(),
-                    "sample_values": column.dropna()
-                    .sample(min(12, column.dropna().shape[0]), random_state=42)
-                    .tolist(),
-                }
-            )
-            pass
-
-        elif class_approx == "ordinal":
-
-            col_info.update(
-                {
-                    "description": "Customer rating of the product on a 1–5 scale.",
-                    "categories": col.value_counts().to_dict(),
-                    "sample_values": column.dropna()
-                    .sample(min(12, column.dropna().shape[0]), random_state=42)
-                    .tolist(),
-                }
-            )
-
-            pass
-
-        elif class_approx == "identifier":
-            pass
-
-        elif class_approx == "text":
-            pass  # call llm to get description
-
-        col_info["distinct_values"] = [str(val) for val in col.unique().tolist()]
-
-        return {}
-
-    def _extract_initial_metadata(self, file):
-        df = pd.read_csv(file, parse_dates=True)
-        output_lines = {}
-
-        output_lines["preview"] = df.head(10).to_dict(orient="records")
-        output_lines["columns_metadata"] = {}
-
-        model = SentenceTransformer(
-            "nomic-ai/nomic-embed-text-v1.5", trust_remote_code=True
-        )
-
-        class_inputs = [
-            f"search_query: {label}, which is '{value}'"
-            for label, value in TYPE_DESCRIPTIONS.keys()
-        ]
-        embeddings = model.encode(
-            class_inputs, convert_to_tensor=True, normalize_embeddings=True
-        )
-
-        for column in df.columns:
-            samples = (
-                column.dropna()
-                .sample(min(12, column.dropna().shape[0]), random_state=42)
-                .tolist()
-            )
-            column_embeddings = model.encode(
-                f""" Column name: {column.name}
-                Sample values: {samples}
-                """,
-                convert_to_tensor=True,
-                normalize_embeddings=True,
-            )
-            similarity_scores = cosine_similarity(embeddings, column_embeddings)
-            best_class_idx = torch.argmax(similarity_scores).item()
-            class_approx = TYPE_DESCRIPTIONS[best_class_idx]
-            col_info = Orchestrator.describe_column(df, column, class_approx)
-            output_lines["columns_metadata"][column] = col_info
-
-        return {
-            "metadata": {
-                "preview": json.dumps(output_lines["preview"], indent=2),
-                "columns_metadata": json.dumps(
-                    output_lines["columns_metadata"], indent=2
-                ),
-            }
-        }
 
     def preprocess(self, file_path, output_file_path, max_step=100):
         eval = Evaluator(self.client)
-        state = {"metadata": self._extract_initial_metadata(file_path)}
+        metadata = MetadataExtractor(self.client)
+        state = metadata._extract_initial_metadata(file_path)
         state["execution_errors"] = []
 
         for step in range(max_step):
