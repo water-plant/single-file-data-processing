@@ -62,7 +62,7 @@ class MetadataExtractor:
             model=self.model,
             messages=[
                 {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": METADATA_EXTRACTOR_PROMPT},
             ],
         )
 
