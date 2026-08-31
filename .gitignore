@@ -1,0 +1,9 @@
+.venv/
+uv.lock
+*.egg-info
+.config
+dataset/
+__pycache__
+
+example.py
+output.txt
