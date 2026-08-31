@@ -14,7 +14,7 @@ from metadata_extraction import MetadataExtractor
 
 import numpy as np
 
-from prompts import ORCHESTRATOR_PROMPT
+from prompts import CODE_GENERATOR_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,9 @@ class Orchestrator:
         self.logger.setLevel(log_level)
         self.api_key = api_key
         self.model = model
-        self.system_prompt = system_prompt if system_prompt else ORCHESTRATOR_PROMPT
+        self.code_system_prompt = (
+            system_prompt if system_prompt else CODE_GENERATOR_PROMPT
+        )
         self.client = OpenAI(api_key=self.api_key)
 
     def _build_prompt(self, state: Dict[str, Any]) -> str:
@@ -131,7 +133,7 @@ class Orchestrator:
     def preprocess(self, file_path, output_file_path, max_step=100):
         eval = Evaluator(self.client)
         metadata = MetadataExtractor(self.client)
-        state = metadata._extract_initial_metadata(file_path)
+        state = metadata.extract(file_path)
         state["execution_errors"] = []
 
         for step in range(max_step):

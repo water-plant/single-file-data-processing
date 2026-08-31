@@ -32,12 +32,19 @@ class Evaluator:
             )
             return state
 
-        stats_passed, stats_reason = self._check_statistical_invariants(
-            df_raw, df_clean
-        )
-        if not stats_passed:
-            state.setdefault("execution_errors", []).append(f"Failed: {stats_reason}")
-            return state
+        checks = [
+            self._check_schema(df_raw, df_clean),
+            self._check_row_changes(df_raw, df_clean, state),
+            self._check_missing_values(df_raw, df_clean, state),
+            self._check_statistical_invariants(df_raw, df_clean),
+            self._check_domain_constraints(df_clean, state),
+        ]
+        for i in range(len(checks)):
+            if not checks[i][0]:
+                state.setdefault("execution_errors", []).append(
+                    f"Failed: {checks[0][1]}"
+                )
+            # return state
 
         # semantic_passed, semantic_reason = self._check_semantic_fidelity(
         #     df_raw, df_clean, state
@@ -48,39 +55,12 @@ class Evaluator:
         #     )
         #     return state
 
-        state["is_complete"] = True
+        state["is_complete"] = len(state["execution_errors"]) == 0
         return state
 
     def _check_statistical_invariants(
         self, df_raw: pd.DataFrame, df_clean: pd.DataFrame
     ) -> Tuple[bool, str]:
-        return
-
-    def _build_semantic_prompt(
-        self, raw_sample: pd.DataFrame, clean_sample: pd.DataFrame
-    ) -> str:
-        return f"""
-        Review the data transformation.
-        Did the transformation break the underlying semantic meaning of the data?
-        
-        RAW DATA SAMPLE:
-        {raw_sample.to_dict(orient="records")}
-        
-        CLEANED DATA SAMPLE:
-        {clean_sample.to_dict(orient="records")}
-        
-        Respond exactly with 'PASS' or 'FAIL: <exact semantic error reason>'.
-        """
-
-    def _check_semantic_fidelity(
-        self, df_raw: pd.DataFrame, df_clean: pd.DataFrame, state: Dict[str, Any]
-    ) -> Tuple[bool, str]:
-        prompt = self._build_semantic_prompt(df_raw.head(5), df_clean.head(5))
-        response = self.client.chat.completions.create(
-            model="gpt-4o", messages=[{"role": "user", "content": prompt}]
-        )
-
-        if "FAIL" in response:
-            return False, response.split("FAIL:")[-1].strip()
-
-        True, ""
+        is_complete = False
+        reason = ""
+        return (not is_complete, reason)

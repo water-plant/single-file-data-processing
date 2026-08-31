@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Optional
+from typing import Dict, Optional
 
 from openai import OpenAI
 import openai
@@ -8,6 +8,7 @@ import pandas as pd
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.util import cosine_similarity
 import torch
+from transformers import Any
 
 from prompts import METADATA_EXTRACTOR_PROMPT
 
@@ -39,17 +40,47 @@ class MetadataExtractor:
             system_prompt if system_prompt else METADATA_EXTRACTOR_PROMPT
         )
 
+        self.sentence_transformer_model = SentenceTransformer(
+            "nomic-ai/nomic-embed-text-v1.5", trust_remote_code=True
+        )
+
+        class_inputs = [
+            f"search_query: {label}, which is '{value}'"
+            for label, value in TYPE_DESCRIPTIONS.keys()
+        ]
+        self.embeddings = self.sentence_transformer_model.encode(
+            class_inputs, convert_to_tensor=True, normalize_embeddings=True
+        )
+
+    def _build_prompt(self, col_info: Dict[str, Any], col_sample_values) -> str:
+
+        user_prompt = f"""
+            Below is the extracted profile of the dataset. 
+            
+            ### Data Profile:
+            {col_info}
+            sample values include:
+            {col_sample_values}
+
+            Use this information to perform the requested metadata extraction.
+            """
+        return user_prompt.strip()
+
     def describe_column(
         self,
         df,
         column,
         class_approx,
         min_unique_values=20,
-        unique_ratio_threshold=0.05,
     ):
         col = df[column]
         data_type = col.dtype
         cardinality_ratio = col.nunique() / len(df) if len(df) > 0 else 0
+        sample_values = (
+            col.dropna()
+            .sample(min(min_unique_values, len(col.dropna())), random_state=42)
+            .tolist()
+        )
 
         col_info = {
             "datatype": str(data_type),
@@ -57,14 +88,8 @@ class MetadataExtractor:
             "missing_count": int(col.isna().sum()),
             "unique_count": len(col.nunique()),
             "cardinality_ratio": round(cardinality_ratio, 4),
+            "sample_values": sample_values,
         }
-        description = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": METADATA_EXTRACTOR_PROMPT},
-            ],
-        )
 
         if class_approx == "datetime":
             col_info["date_range"] = {
@@ -85,60 +110,40 @@ class MetadataExtractor:
                     "iqr": q3 - q1,
                 }
             )
-        elif class_approx == "categorical":
+        elif class_approx in ["categorical", "ordinal"]:
             col_info.update(
                 {
-                    "description": "Customer rating of the product on a 1–5 scale.",
                     "categories": col.value_counts().to_dict(),
-                    "sample_values": column.dropna()
-                    .sample(min(12, column.dropna().shape[0]), random_state=42)
-                    .tolist(),
                 }
             )
-            pass
-
-        elif class_approx == "ordinal":
-
+        elif class_approx in ["identifier", "text"]:
             col_info.update(
                 {
-                    "description": "Customer rating of the product on a 1–5 scale.",
-                    "categories": col.value_counts().to_dict(),
                     "sample_values": column.dropna()
                     .sample(min(12, column.dropna().shape[0]), random_state=42)
                     .tolist(),
                 }
             )
 
-            pass
+        prompt = self._build_prompt(col_info, sample_values)
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+        )
 
-        elif class_approx == "identifier":
-            pass
+        col_info["llm_description"] = json.loads(response.choices[0].message.content)
 
-        elif class_approx == "text":
-            pass  # call llm to get description
+        return col_info
 
-        col_info["distinct_values"] = [str(val) for val in col.unique().tolist()]
-
-        return {}
-
-    def _extract_initial_metadata(self, file):
+    def extract(self, file):
         df = pd.read_csv(file, parse_dates=True)
         output_lines = {}
 
         output_lines["preview"] = df.head(10).to_dict(orient="records")
         output_lines["columns_metadata"] = {}
-
-        model = SentenceTransformer(
-            "nomic-ai/nomic-embed-text-v1.5", trust_remote_code=True
-        )
-
-        class_inputs = [
-            f"search_query: {label}, which is '{value}'"
-            for label, value in TYPE_DESCRIPTIONS.keys()
-        ]
-        embeddings = model.encode(
-            class_inputs, convert_to_tensor=True, normalize_embeddings=True
-        )
 
         for column in df.columns:
             samples = (
@@ -146,14 +151,14 @@ class MetadataExtractor:
                 .sample(min(12, column.dropna().shape[0]), random_state=42)
                 .tolist()
             )
-            column_embeddings = model.encode(
+            column_embeddings = self.sentence_transformer_model.encode(
                 f""" Column name: {column.name}
                 Sample values: {samples}
                 """,
                 convert_to_tensor=True,
                 normalize_embeddings=True,
             )
-            similarity_scores = cosine_similarity(embeddings, column_embeddings)
+            similarity_scores = cosine_similarity(self.embeddings, column_embeddings)
             best_class_idx = torch.argmax(similarity_scores).item()
             class_approx = TYPE_DESCRIPTIONS[best_class_idx]
             col_info = self.describe_column(df, column, class_approx)
