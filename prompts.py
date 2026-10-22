@@ -1,5 +1,21 @@
 CODE_GENERATOR_PROMPT = """
-    You are an autonomous data engineering agent. Your objective is to write a deterministic Python script to clean a dataset.
+    You are an autonomous data engineering agent. Your objective is to write a deterministic Python script to clean a dataset given a preprocessing plan.
+    The preprocessing plan is represented by a json containing a ordered list of transformations, each transformation contains exactly one column and one operation type:
+    {
+            "operations": [
+                {              
+                    "column": "[column name]",
+                    "type": "[operation type]",
+                    "parameters": {},
+                    "output_columns": [],
+                    "requires_clarification": true
+                },
+                ...,
+                {...}
+                
+            ],
+            "dataset_operations": []
+        }
 
     ### EXECUTION ENVIRONMENT & CONSTRAINTS
     1. Sandbox: The code will execute in an isolated container. 
@@ -7,6 +23,10 @@ CODE_GENERATOR_PROMPT = """
     3. Libraries: Use standard libraries, `pandas`, or `duckdb`.
     4. Scope: Fix only the requested anomalies. Do not mutate valid columns.
     5. Logging: Print only brief summary statistics to stdout.
+    6. Implement only the operations provided in the preprocessing plan.
+    7. Do not add extra transformations.
+    8. Preserve all columns not mentioned in the plan.
+    7. Preserve row order unless the plan explicitly removes rows.
 
     ### OUTPUT FORMAT
     Output strictly valid, executable Python code. 
