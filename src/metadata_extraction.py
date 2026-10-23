@@ -9,6 +9,7 @@ from sentence_transformers import SentenceTransformer
 from sentence_transformers.util import cosine_similarity
 import torch
 from transformers import Any
+from scipy import stats
 
 from prompts import METADATA_EXTRACTOR_PROMPT
 
@@ -165,12 +166,8 @@ class MetadataExtractor:
             output_lines["columns_metadata"][column] = col_info
 
         return {
-            "metadata": {
-                "preview": json.dumps(output_lines["preview"], indent=2),
-                "columns_metadata": json.dumps(
-                    output_lines["columns_metadata"], indent=2
-                ),
-            }
+            "preview": json.dumps(output_lines["preview"], indent=2),
+            "columns_metadata": json.dumps(output_lines["columns_metadata"], indent=2),
         }
 
     pass
