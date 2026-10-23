@@ -1,14 +1,17 @@
+from __future__ import annotations
+
 import logging
 import os
 import time
 import docker
 
 # import uuid
-from typing import Optional
+from typing import List, Optional
 from typing import Dict, Any
 import json
 from openai import OpenAI
 
+from planner import PlanGenerator
 from evaluator import Evaluator
 from metadata_extraction import MetadataExtractor
 
@@ -55,21 +58,26 @@ class Orchestrator:
         )
         self.client = OpenAI(api_key=self.api_key)
 
-    def _build_prompt(self, state: Dict[str, Any]) -> str:
+    def _build_prompt(
+        self, metadata, execution_errors, operations: List[Dict[str, Any]]
+    ) -> str:
         error_context = ""
-        if state.get("execution_errors"):
+        if execution_errors:
             error_context = f"""
             ### PREVIOUS EXECUTION ERRORS
             The previous script failed. Analyze the traceback below and correct the logic:
-            {state["execution_errors"][-1]}
+            {execution_errors[-1]}
             """
 
         user_prompt = f"""
+        ### Ordered List Of Operations:
+        {operations}
+        
         ### FIRST 10 ROWS:
-        {state["metadata"]["preview"]}
+        {metadata["preview"]}
         
         ### Data Profile:
-        {state["metadata"]["columns_metadata"]}
+        {metadata["columns_metadata"]}
 
         {error_context}
         
@@ -130,15 +138,29 @@ class Orchestrator:
 
     # @staticmethod
 
-    def preprocess(self, file_path, output_file_path, max_step=100):
+    def preprocess(
+        self,
+        file_path,
+        output_file_path,
+        user_request: str | None = None,
+        max_step: int = 100,
+    ):
         eval = Evaluator(self.client)
-        metadata = MetadataExtractor(self.client)
-        state = metadata.extract(file_path)
-        state["execution_errors"] = []
+        metadata_extractor = MetadataExtractor(self.client)
+        planner = PlanGenerator(self.client)
+
+        original_metadata = metadata_extractor.extract(file_path)
+        execution_errors = ""
 
         for step in range(max_step):
             print(f"--- Iteration {step + 1} ---")
-            prompt = self._build_prompt(state)
+            preprocessing_plan = planner.generate_plan(user_request, original_metadata)
+            # state.update(preprocessing_plan)
+            prompt = self._build_prompt(
+                original_metadata,
+                execution_errors,
+                preprocessing_plan,
+            )
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -150,7 +172,7 @@ class Orchestrator:
 
             raw_code = response.choices[0].message.content
             code = raw_code.replace("```python", "").replace("```", "").strip()
-            state["generated_code"] = code
+            # state["generated_code"] = code
 
             status_output = self._execute_in_docker_sandbox(
                 code, file_path, output_file_path
@@ -158,21 +180,21 @@ class Orchestrator:
             status = status_output["status"]
 
             if status == "error":
-                error_msg = f"Runtime Error: {status}"
-                state["execution_errors"].append(error_msg)
-                logging.info(error_msg)
+                execution_errors = f"Runtime Error: {status}"
+                logging.info(execution_errors)
                 time.sleep(19)
                 continue
 
             output = status_output["output"]
-            state["is_complete"] = eval.evaluate(state)
+            is_complete = eval.evaluate()
 
             logging.info(output)
-            if state.get("is_complete"):
+
+            if is_complete:
                 logging.info("Pipeline successfully validated.")
                 break
             else:
-                logging.info(f"Validation Failed: {state['execution_errors'][-1]}")
+                logging.info(f"Validation Failed: {execution_errors}")
                 time.sleep(19)
 
         return
