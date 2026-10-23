@@ -1,4 +1,6 @@
 from typing import Any, Dict, List, Tuple
+from evaluator_utils.integrity_checks import IntegrityChecks
+from evaluator_utils.result import CheckResults
 import pandas as pd
 import numpy as np
 from scipy import stats
@@ -8,7 +10,6 @@ from concurrent.futures import ThreadPoolExecutor
 class Evaluator:
     def __init__(
         self,
-        client,
         row_retention_threshold: float = 0.95,
         distribution_threshold: float = 0.10,
     ):
@@ -23,7 +24,9 @@ class Evaluator:
             "imputation": self._check_imputation,
         }
 
-    def evaluate(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    def evaluate(
+        self, state: Dict[str, Any], operations: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
         """Runs evaluation on the agent's output."""
 
         if state.get("execution_errors"):
@@ -41,171 +44,101 @@ class Evaluator:
             )
             return state
 
-        global_checks = [
-            self._check_schema(df_raw, df_clean),
-            self._check_missing_values(df_raw, df_clean, state),
-            self._check_statistical_invariants(df_raw, df_clean),
-            self._check_domain_constraints(df_clean, state),
-        ]
+        results = CheckResults()
 
-        evaluation_errors = {
-            "global_checks": {
-                "schema": self._check_schema(df_raw, df_clean, state),
-                "row_retention": self.check_row_retention(df_raw, df_clean),
-            },
-            "missing_values": self._check_missing_values(df_clean),
-            "domain_constraints": self._check_domain_constraints(
-                df_raw, df_clean, state["metadata"]
-            ),
-            "statistical_invariants": self._check_statistical_invariants(
-                df_raw, df_clean, state["metadata"]
-            ),
-            "categorical_distribution": self._check_categorical_distribution(
-                df_raw, df_clean
-            ),
-        }
+        results.add(IntegrityChecks._check_schema(df_raw, df_clean, operations))
+        results.add(IntegrityChecks.row_retention(df_raw, df_clean))
+        results.add(IntegrityChecks.null_values(df_clean))
+        results.add(
+            IntegrityChecks.distribution_preservation(
+                df_raw,
+                df_clean,
+                operations,
+            )
+        )
+        results.add(
+            IntegrityChecks.ensure_unchanged_columns(
+                df_raw,
+                df_clean,
+                operations,
+            )
+        )
 
-        state["evaluation"] = {
-            "passed": state["is_complete"] == len(state["execution_errors"]) == 0,
-        }
+        state["evaluation"] = results.to_dict()
+        state["is_complete"] = results.passed
+        state["score"] = results.score
 
-        state["is_complete"] = len(state["execution_errors"]) == 0
         return state
 
-    def _check_schema(
-        self,
-        df_raw: pd.DataFrame,
-        df_clean: pd.DataFrame,
-        transformations: Dict[str, Any],
-    ) -> Tuple[bool, str]:
-        is_complete = False
-        reason = ""
+    # def _check_schema(
+    #     self,
+    #     df_raw: pd.DataFrame,
+    #     df_clean: pd.DataFrame,
+    #     transformations: Dict[str, Any],
+    # ) -> Tuple[bool, str]:
+    #     # TODO:
+    #     # 1. Determine expected columns after transformations.
+    #     # 2. Check unexpected columns.
+    #     # 3. Check unexpectedly removed columns.
+    #     # 4. Validate expected dtype changes.
 
-        # TODO:
-        # 1. Determine expected columns after transformations.
-        # 2. Check unexpected columns.
-        # 3. Check unexpectedly removed columns.
-        # 4. Validate expected dtype changes.
+    #     all_output_columns = [
+    #         new_col
+    #         for operation in transformations
+    #         for new_col in operation["output_columns"]
+    #     ]
 
-        new_columns = [
-            new_col
-            for _, transformation in transformations.items()
-            for new_col in transformation["expected columns"]
-        ]
+    #     columns_not_in_df = list(set(all_output_columns).difference(df_clean.columns))
+    #     unexpected_columns = list(set(df_clean.columns).difference(all_output_columns))
+    #     dtype_mismatch = []
 
-        columns_not_in_df = list(set(new_columns).difference(df_clean.columns))
-        unexpected_columns = list(set(df_clean.columns).difference(new_columns))
-        dtype_mismatch = []
+    #     for col in df_raw.columns:
+    #         if "Casting" in transformations[col]["types"]:
+    #             if transformations[col]["dtype"] != df_clean[col].dtype:
+    #                 dtype_mismatch.append[col]
 
-        for col in df_raw.columns:
-            if "Casting" in transformations[col]["types"]:
-                if transformations[col]["dtype"] != df_clean[col].dtype:
-                    dtype_mismatch.append[col]
+    #     return (
+    #         (
+    #             not len(columns_not_in_df)
+    #             and not len(columns_not_in_df)
+    #             and not len(dtype_mismatch)
+    #         ),
+    #         f"missing columns from dataframe: {columns_not_in_df}, unexpected columsn in dataframe: {unexpected_columns}, columns with dtype mismatch:{dtype_mismatch} ",
+    #     )
 
-        transformations
-        return (
-            (
-                not len(columns_not_in_df)
-                and not len(columns_not_in_df)
-                and not len(dtype_mismatch)
-            ),
-            f"missing columns from dataframe: {columns_not_in_df}, unexpected columsn in dataframe: {unexpected_columns}, columns with dtype mismatch:{dtype_mismatch} ",
-        )
+    # def _check_missing_values(self, df_clean: pd.DataFrame) -> Tuple[bool, str]:
 
-    def _evaluate_column(
-        self,
-        column: str,
-        raw: pd.Series,
-        clean: pd.Series,
-        metadata: Dict[str, Any],
-        state: Dict[str, Any],
-    ) -> List[Dict[str, str]]:
-        """Run checks appropriate for an individual column."""
-        failures = []
-        # Missing values
-        passed, reason = self._check_missing_values(
-            raw,
-            clean,
-            metadata,
-        )
-        if not passed:
-            failures.append(
-                {
-                    "scope": "column",
-                    "column": column,
-                    "check": "missing_values",
-                    "reason": reason,
-                }
-            )
+    #     if not df_clean.notna().all(axis=None):
+    #         return False, f"{df_clean.isna().sum().to_dict()}"
 
-        # Statistical invariants
-        passed, reason = self._check_statistical_invariants(
-            raw,
-            clean,
-            metadata,
-        )
-        if not passed:
-            failures.append(
-                {
-                    "scope": "column",
-                    "column": column,
-                    "check": "statistical_invariants",
-                    "reason": reason,
-                }
-            )
+    #     return True, ""
 
-        # Domain constraints
-        passed, reason = self._check_domain_constraints(
-            clean,
-            metadata,
-        )
-        if not passed:
-            failures.append(
-                {
-                    "scope": "column",
-                    "column": column,
-                    "check": "domain_constraints",
-                    "reason": reason,
-                }
-            )
-            return failures
+    # def _check_domain_constraints(
+    #     self, df_clean: pd.DataFrame, metadata
+    # ) -> Tuple[bool, str]:
+    #     is_complete = False
+    #     reason = ""
 
-    def _check_missing_values(self, df_clean: pd.DataFrame) -> Tuple[bool, str]:
+    #     for col in df_clean.columns:
+    #         pass
 
-        if not df_clean.notna().all(axis=None):
-            return False, f"{df_clean.isna().sum().to_dict()}"
+    #     return True, ""
 
-        return True, ""
+    # def _check_categorical_distribution(
+    #     self, raw: pd.Series, clean: pd.Series
+    # ) -> Tuple[bool, dict]:
 
-    def _check_domain_constraints(
-        self, df_clean: pd.DataFrame, metadata
-    ) -> Tuple[bool, str]:
-        is_complete = False
-        reason = ""
-        return True, ""
+    #     raw_dist = raw.value_counts(normalize=True)
+    #     clean_dist = clean.value_counts(normalize=True)
 
-    def _check_statistical_invariants(
-        self, df_raw: pd.DataFrame, df_clean: pd.DataFrame
-    ) -> Tuple[bool, str]:
-        is_complete = False
-        reason = ""
-        return True, ""
+    #     categories = raw_dist.index.union(clean_dist.index)
 
-    def _check_categorical_distribution(
-        self, raw: pd.Series, clean: pd.Series
-    ) -> Tuple[bool, dict]:
+    #     raw_dist = raw_dist.reindex(categories, fill_value=0)
+    #     clean_dist = clean_dist.reindex(categories, fill_value=0)
 
-        raw_dist = raw.value_counts(normalize=True)
-        clean_dist = clean.value_counts(normalize=True)
+    #     difference = (raw_dist - clean_dist).abs().max()
 
-        categories = raw_dist.index.union(clean_dist.index)
+    #     if difference > self.distribution_threshold:
+    #         return (False, f"Maximum category distribution shift: {difference:.2%}")
 
-        raw_dist = raw_dist.reindex(categories, fill_value=0)
-        clean_dist = clean_dist.reindex(categories, fill_value=0)
-
-        difference = (raw_dist - clean_dist).abs().max()
-
-        if difference > self.distribution_threshold:
-            return (False, f"Maximum category distribution shift: {difference:.2%}")
-
-        return True, {}
+    #     return True, {}
