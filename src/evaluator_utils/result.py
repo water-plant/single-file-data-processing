@@ -85,6 +85,10 @@ class CheckResults:
         return all(result.passed for result in self.results)
 
     @property
+    def score(self) -> bool:
+        return sum(result.passed for result in self.results) / len(self.results)
+
+    @property
     def failures(self) -> list[CheckResult]:
         return [result for result in self.results if not result.passed]
 
@@ -97,6 +101,7 @@ class CheckResults:
     def to_dict(self) -> dict[str, Any]:
         return {
             "passed": self.passed,
+            "score": self.score,
             "results": [result.to_dict() for result in self.results],
             "failures": [result.to_dict() for result in self.failures],
         }
