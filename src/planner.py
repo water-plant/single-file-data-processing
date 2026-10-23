@@ -22,16 +22,19 @@ class PlanGenerator:
 
         self.system_prompt = system_prompt if system_prompt else PLANNER_PROMPT
 
-    def _build_prompt(self, user_request, state: Dict[str, Any]) -> str:
+    def _build_prompt(self, user_request: str, metadata: Dict[str, Any]) -> str:
 
         user_prompt = f"""
                 Generate a preprocessing plan for the following request. 
                 
                 ## User Request 
                 {user_request} 
+
+                ### FIRST 10 ROWS:
+                {metadata["preview"]}
                 
                 ## Dataset Metadata 
-                {state['metadata']} 
+                {metadata} 
                 
                 Return a valid JSON object following the required output schema. 
                 Use the dataset metadata to identify relevant columns and determine applicable parameters. 
@@ -42,7 +45,7 @@ class PlanGenerator:
                 """
         return user_prompt.strip()
 
-    def generate_plan(self, user_request, state: Dict[str, Any]) -> str:
+    def generate_plan(self, user_request: str, state: Dict[str, Any]) -> Dict[str, Any]:
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
